@@ -54,12 +54,20 @@ def run_ffmpeg(cmd):
 
 
 def create_overlay():
-    """Создать пустой оверлей"""
+    """Создать оверлей из корня проекта"""
     overlay_path = os.path.join(WORK_DIR, "overlay.png")
     os.makedirs(WORK_DIR, exist_ok=True)
-    if not os.path.exists(overlay_path):
+    
+    # Проверяем наличие оверлея в корне проекта
+    root_overlay = "overlay.png"
+    if os.path.exists(root_overlay):
+        # Копируем оверлей из корня проекта
+        shutil.copy2(root_overlay, overlay_path)
+    else:
+        # Fallback: создаем пустой прозрачный оверлей
         img = Image.new('RGBA', (1280, 720), (0, 0, 0, 0))
         img.save(overlay_path)
+    
     return overlay_path
 
 
