@@ -1,0 +1,78 @@
+name: Build Windows Desktop App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install streamlit-desktop-app pyinstaller
+    
+    - name: Download and install font (optional)
+      run: |
+        # Скачиваем DejaVu Sans шрифт для использования в приложении
+        $fontsDir = "fonts"
+        if (!(Test-Path $fontsDir)) { New-Item -ItemType Directory -Path $fontsDir }
+        
+        try {
+          Invoke-WebRequest -Uri "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip" -OutFile "dejavu.zip" -ErrorAction SilentlyContinue
+          Expand-Archive -Path "dejavu.zip" -DestinationPath "dejavu-temp" -ErrorAction SilentlyContinue
+          Copy-Item "dejavu-temp/dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf" -Destination "$fontsDir/DejaVuSans.ttf" -ErrorAction SilentlyContinue
+          Remove-Item "dejavu.zip" -ErrorAction SilentlyContinue
+          Remove-Item "dejavu-temp" -Recurse -ErrorAction SilentlyContinue
+          Write-Host "DejaVu font installed successfully"
+        } catch {
+          Write-Host "Could not download font, app will use system fonts"
+        }
+      shell: pwsh
+    
+    - name: Build desktop app
+      run: |
+        streamlit-desktop-app build app.py --name Replicator2 --icon icon.ico --additional-hooks-dir hooks
+      shell: cmd
+    
+    - name: Check build output
+      run: |
+        dir dist\
+        if exist "dist\Replicator2.exe" (
+          echo "Build successful!"
+        ) else (
+          echo "Build failed!"
+          exit 1
+        )
+      shell: cmd
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Replicator2-Windows
+        path: dist/Replicator2.exe
+        retention-days: 30
+    
+    - name: Create Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/Replicator2.exe
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

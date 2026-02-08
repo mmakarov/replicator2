@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import shutil
 import re
@@ -6,6 +7,13 @@ import math
 import logging
 import streamlit as st
 from PIL import Image
+
+# Импортируем imageio_ffmpeg для автоматической загрузки FFmpeg
+try:
+    from imageio_ffmpeg import get_ffmpeg_exe, get_ffprobe_exe
+    IMAGEIO_FFMPEG_AVAILABLE = True
+except ImportError:
+    IMAGEIO_FFMPEG_AVAILABLE = False
 
 
 # === КОНСТАНТЫ ===
@@ -15,19 +23,49 @@ WORK_DIR = os.path.abspath("temp_video")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Глобальные переменные для путей к FFmpeg
+FFMPEG_PATH = None
+FFPROBE_PATH = None
 
-# === ФУНКЦИИ ===
+
+def get_base_path():
+    """Получить базовый путь (для работы с bundled приложением)"""
+    if getattr(sys, 'frozen', False):
+        # Запущено из PyInstaller exe
+        return sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def get_font_path():
     """Получить путь к шрифту"""
-    fonts = [
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/System/Library/Fonts/Arial.ttf",  # macOS
+    base_path = get_base_path()
+    
+    # Сначала проверяем bundled шрифт
+    bundled_fonts = [
+        os.path.join(base_path, "fonts", "DejaVuSans.ttf"),
+        os.path.join(base_path, "fonts", "LiberationSans-Regular.ttf"),
+        os.path.join(base_path, "fonts", "Arial.ttf"),
     ]
-    for font in fonts:
+    
+    for font in bundled_fonts:
         if os.path.exists(font):
             return font
-    return "Sans"
+    
+    # Fallback на системные шрифты
+    system_fonts = [
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    ]
+    for font in system_fonts:
+        if os.path.exists(font):
+            return font
+    
+    # Если шрифт не найден, возвращаем пустую строку
+    # FFmpeg будет использовать встроенный шрифт или системный по умолчанию
+    return ""
 
 
 def escape_text(text):
@@ -35,14 +73,36 @@ def escape_text(text):
     return str(text).replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
 
 
+def init_ffmpeg():
+    """Инициализировать пути к FFmpeg и FFprobe"""
+    global FFMPEG_PATH, FFPROBE_PATH
+    
+    if IMAGEIO_FFMPEG_AVAILABLE:
+        try:
+            FFMPEG_PATH = get_ffmpeg_exe()
+            FFPROBE_PATH = get_ffprobe_exe()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка инициализации imageio-ffmpeg: {e}")
+            return False
+    return False
+
+
 def check_ffmpeg_available():
     """Проверить доступность FFmpeg и FFprobe"""
+    global FFMPEG_PATH, FFPROBE_PATH
+    
+    # Если еще не инициализировали
+    if FFMPEG_PATH is None or FFPROBE_PATH is None:
+        if not init_ffmpeg():
+            return False
+    
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
-        subprocess.run(["ffprobe", "-version"], capture_output=True, timeout=10)
+        subprocess.run([FFMPEG_PATH, "-version"], capture_output=True, timeout=10)
+        subprocess.run([FFPROBE_PATH, "-version"], capture_output=True, timeout=10)
         return True
     except FileNotFoundError:
-        st.error("❌ FFmpeg не найден. Убедитесь, что FFmpeg установлен в системе.")
+        st.error("❌ FFmpeg не найден. Приложение не может работать.")
         return False
     except subprocess.TimeoutExpired:
         st.error("❌ Таймаут при проверке FFmpeg/FFprobe.")
@@ -53,13 +113,14 @@ def check_ffmpeg_available():
 
 def get_duration(filepath):
     """Получить длительность видео"""
+    global FFPROBE_PATH
     try:
         if not check_ffmpeg_available():
             raise Exception("FFmpeg недоступен")
         
         filepath = os.path.abspath(filepath)
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
             capture_output=True, text=True, timeout=30
         )
@@ -83,9 +144,13 @@ def get_duration(filepath):
 
 def run_ffmpeg(cmd):
     """Запустить FFmpeg команду"""
+    global FFMPEG_PATH
+    
     if not check_ffmpeg_available():
         raise Exception("FFmpeg недоступен")
     
+    # Заменяем 'ffmpeg' на полный путь
+    cmd = [FFMPEG_PATH if c == "ffmpeg" else c for c in cmd]
     cmd = [os.path.abspath(c) if os.path.isfile(c) or (isinstance(c, str) and c.endswith(('.mp4', '.mp3', '.png', '.txt'))) else c for c in cmd]
     
     try:

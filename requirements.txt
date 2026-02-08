@@ -4,3 +4,4 @@ proglog
 natsort
 click
 python-dotenv
+imageio-ffmpeg
