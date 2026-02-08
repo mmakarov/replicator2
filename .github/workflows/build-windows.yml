@@ -52,7 +52,7 @@ jobs:
     - name: Check build output
       run: |
         dir dist\
-        if exist "dist\Replicator2.exe" (
+        if exist "dist\Replicator2\Replicator2.exe" (
           echo "Build successful!"
         ) else (
           echo "Build failed!"
@@ -64,7 +64,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Replicator2-Windows
-        path: dist/Replicator2.exe
+        path: dist/Replicator2/
         retention-days: 30
     
     - name: Create Release (on tag)
