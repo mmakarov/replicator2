@@ -1,6 +1,6 @@
 streamlit
 Pillow
-moviepy
-opencv-python-headless
 proglog
 natsort
+click
+python-dotenv

@@ -3,12 +3,17 @@ import subprocess
 import shutil
 import re
 import math
+import logging
 import streamlit as st
 from PIL import Image
 
 
 # === КОНСТАНТЫ ===
 WORK_DIR = os.path.abspath("temp_video")
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # === ФУНКЦИИ ===
@@ -30,27 +35,71 @@ def escape_text(text):
     return str(text).replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
 
 
+def check_ffmpeg_available():
+    """Проверить доступность FFmpeg и FFprobe"""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
+        subprocess.run(["ffprobe", "-version"], capture_output=True, timeout=10)
+        return True
+    except FileNotFoundError:
+        st.error("❌ FFmpeg не найден. Убедитесь, что FFmpeg установлен в системе.")
+        return False
+    except subprocess.TimeoutExpired:
+        st.error("❌ Таймаут при проверке FFmpeg/FFprobe.")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка при проверке FFmpeg: {e}")
+        return False
+
 def get_duration(filepath):
     """Получить длительность видео"""
     try:
+        if not check_ffmpeg_available():
+            raise Exception("FFmpeg недоступен")
+        
         filepath = os.path.abspath(filepath)
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
             capture_output=True, text=True, timeout=30
         )
-        return float(result.stdout.strip())
-    except:
+        if result.returncode != 0:
+            logger.error(f"Ошибка ffprobe: {result.stderr}")
+            return 0.0
+        duration_str = result.stdout.strip()
+        if not duration_str or duration_str == "N/A":
+            return 0.0
+        return float(duration_str)
+    except subprocess.TimeoutExpired:
+        logger.error("Таймаут при получении длительности видео")
+        return 0.0
+    except ValueError:
+        logger.error(f"Невозможно преобразовать длительность видео: {result.stdout}")
+        return 0.0
+    except Exception as e:
+        logger.error(f"Ошибка при получении длительности видео: {e}")
         return 0.0
 
 
 def run_ffmpeg(cmd):
     """Запустить FFmpeg команду"""
+    if not check_ffmpeg_available():
+        raise Exception("FFmpeg недоступен")
+    
     cmd = [os.path.abspath(c) if os.path.isfile(c) or (isinstance(c, str) and c.endswith(('.mp4', '.mp3', '.png', '.txt'))) else c for c in cmd]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=WORK_DIR)
-    if result.returncode != 0:
-        raise Exception(f"FFmpeg error: {result.stderr}")
-    return result
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=WORK_DIR, timeout=300)  # 5 минут таймаут
+        if result.returncode != 0:
+            logger.error(f"FFmpeg ошибка: {result.stderr}")
+            raise Exception(f"FFmpeg error: {result.stderr}")
+        return result
+    except subprocess.TimeoutExpired:
+        logger.error(f"Таймаут выполнения команды FFmpeg: {' '.join(cmd)}")
+        raise Exception("Таймаут выполнения команды FFmpeg")
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении команды FFmpeg: {e}")
+        raise
 
 
 def create_overlay():
@@ -98,6 +147,10 @@ def find_videos():
 def process_videos(heading, name1, name2, datetext, progress_callback):
     """Основная обработка видео"""
     
+    # Проверяем доступность FFmpeg перед началом обработки
+    if not check_ffmpeg_available():
+        raise Exception("FFmpeg недоступен. Обработка видео невозможна.")
+    
     # Создаём директории
     for folder in ["video", "audio", "temp_parts"]:
         os.makedirs(os.path.join(WORK_DIR, folder), exist_ok=True)
@@ -106,6 +159,15 @@ def process_videos(heading, name1, name2, datetext, progress_callback):
     files = find_videos()
     if not files:
         raise Exception("Нет видеофайлов!")
+    
+    progress_callback("Проверка файлов...")
+    # Проверяем, что все видеофайлы существуют и доступны
+    for fpath in files:
+        if not os.path.exists(fpath):
+            raise Exception(f"Файл не найден: {fpath}")
+        # Проверяем, что файл не пустой
+        if os.path.getsize(fpath) == 0:
+            raise Exception(f"Видео файл пустой: {fpath}")
     
     font = get_font_path()
     temp_dir = os.path.join(WORK_DIR, "temp_parts")
@@ -160,23 +222,27 @@ def process_videos(heading, name1, name2, datetext, progress_callback):
         progress_callback("Добавляю звук...")
         a_dur = get_duration(audio_path)
         v_dur = get_duration(medium)
-        loop = math.ceil(a_dur/v_dur) if v_dur > 0 else 1
-        
-        silent = os.path.join(WORK_DIR, "silent.mp4")
-        if loop > 1:
-            run_ffmpeg([
-                "ffmpeg", "-y", "-stream_loop", str(loop-1),
-                "-i", os.path.abspath(medium), "-c", "copy", os.path.abspath(silent)
-            ])
+        if a_dur == 0 or v_dur == 0:
+            logger.warning("Не удалось получить длительность аудио или видео файла")
+            shutil.move(os.path.abspath(medium), os.path.abspath(final_out))
         else:
-            shutil.copy(os.path.abspath(medium), os.path.abspath(silent))
-        
-        run_ffmpeg([
-            "ffmpeg", "-y", "-i", os.path.abspath(silent), "-i", os.path.abspath(audio_path),
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-            "-c:a", "aac", "-shortest", os.path.abspath(final_out)
-        ])
-        os.remove(silent)
+            loop = math.ceil(a_dur/v_dur) if v_dur > 0 else 1
+            
+            silent = os.path.join(WORK_DIR, "silent.mp4")
+            if loop > 1:
+                run_ffmpeg([
+                    "ffmpeg", "-y", "-stream_loop", str(loop-1),
+                    "-i", os.path.abspath(medium), "-c", "copy", os.path.abspath(silent)
+                ])
+            else:
+                shutil.copy(os.path.abspath(medium), os.path.abspath(silent))
+            
+            run_ffmpeg([
+                "ffmpeg", "-y", "-i", os.path.abspath(silent), "-i", os.path.abspath(audio_path),
+                "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                "-c:a", "aac", "-shortest", os.path.abspath(final_out)
+            ])
+            os.remove(silent)
     else:
         shutil.move(os.path.abspath(medium), os.path.abspath(final_out))
     
@@ -188,6 +254,11 @@ def process_videos(heading, name1, name2, datetext, progress_callback):
 
 # === UI ===
 st.set_page_config(page_title="Video Maker", layout="wide")
+
+# Проверяем доступность FFmpeg при запуске приложения
+if not check_ffmpeg_available():
+    st.error("❌ Приложение не может работать без FFmpeg. Обратитесь к администратору.")
+    st.stop()
 
 # Инициализируем директории
 os.makedirs(os.path.join(WORK_DIR, "video"), exist_ok=True)
@@ -260,4 +331,5 @@ if st.button("🚀 СОЗДАТЬ ВИДЕО", type="primary", use_container_wid
                 status.error("❌ Файл не найден. Видео не было создано.")
                 
         except Exception as e:
-            status.error(f"❌ Ошибка: {e}")
+            logger.error(f"Ошибка при обработке видео: {e}")
+            status.error(f"❌ Ошибка: {str(e)}")
