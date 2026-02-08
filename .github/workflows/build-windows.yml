@@ -46,7 +46,7 @@ jobs:
     
     - name: Build desktop app
       run: |
-        streamlit-desktop-app build app.py --name Replicator2 --icon icon.ico --additional-hooks-dir hooks
+        streamlit-desktop-app build app.py --name Replicator2
       shell: cmd
     
     - name: Check build output
